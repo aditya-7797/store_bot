@@ -1,7 +1,16 @@
 import sqlite3
-from pathlib import Path
+import os
 
-DB_PATH = Path(__file__).resolve().parent.parent / "inventory.db"
+DB_PATH = os.path.join(os.path.dirname(__file__), "inventory.db")
 
 def get_connection():
-    return sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute("PRAGMA foreign_keys = ON;")
+    conn.execute("""
+    CREATE TABLE IF NOT EXISTS products (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT UNIQUE NOT NULL,
+        stock INTEGER DEFAULT 0 CHECK(stock >= 0)
+    )
+    """)
+    return conn
