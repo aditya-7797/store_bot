@@ -1,12 +1,15 @@
 from tools.db import get_connection
-
-
 # ---------- Helper ----------
 def normalize_product_name(name: str) -> str:
     name = name.lower().strip()
-    # simple normalization for pen / pens
-    if name.endswith("pen") and not name.endswith("pens"):
-        return name + "s"
+
+    if name.endswith("ies"):
+        return name[:-3] + "y"
+    elif name.endswith("es"):
+        return name[:-2]
+    elif name.endswith("s"):
+        return name[:-1]
+
     return name
 
 
@@ -70,6 +73,7 @@ def update_stock(product_name: str, quantity: int):
     conn.commit()
     conn.close()
     return "Stock updated"
+
 
 def cleanup_duplicates():
     conn = get_connection()

@@ -1,38 +1,27 @@
-from tools.inventory_tools import update_stock
+from tools.inventory_tools import get_stock, update_stock
+def clerk_agent(state: dict):
+    query = state["query"].lower()
 
+    quantity = int([s for s in query.split() if s.isdigit()][0])
 
-def clerk_agent(query: str):
-    query = query.lower().strip()
-    words = query.split()
+    if "add" in query:
+        product = query.replace("add", "").replace(str(quantity), "").strip()
+        update_stock(product, quantity)
+        stock = get_stock(product)
+        state["response"] = f"Added {quantity} {product}. Current stock: {stock}."
+        return state
 
-    action = None
-    if "sell" in words:
-        action = "sell"
-    elif "add" in words:
-        action = "add"
+    if "sell" in query:
+        product = query.replace("sell", "").replace(str(quantity), "").strip()
+        stock = get_stock(product)
 
-    if not action:
-        return "Could not understand command"
+        if stock < quantity:
+            state["response"] = f"Only {stock} {product} available. Cannot sell {quantity}."
+            return state
 
-    # extract quantity
-    qty = None
-    for word in words:
-        if word.isdigit():
-            qty = int(word)
-            break
+        update_stock(product, -quantity)
+        state["response"] = f"Sold {quantity} {product}. Remaining stock: {stock - quantity}."
+        return state
 
-    if qty is None:
-        return "Please specify a quantity."
-
-    # extract product name (everything after qty)
-    qty_index = words.index(str(qty))
-    product = " ".join(words[qty_index + 1:])
-
-    if not product:
-        return "Please specify a product."
-
-    if action == "sell":
-        return update_stock(product, -qty)
-
-    if action == "add":
-        return update_stock(product, qty)
+    state["response"] = "I can only add or sell products."
+    return state

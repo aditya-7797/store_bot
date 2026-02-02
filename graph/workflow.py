@@ -1,53 +1,24 @@
-from typing import TypedDict
-
-from langgraph.graph import StateGraph, END
-
+from langgraph.graph import StateGraph
 from agents.manager import manager_agent
-from agents.librarian import viewer_agent
+from agents.librarian import librarian_agent
 from agents.clerk import clerk_agent
 
+workflow = StateGraph(dict)
 
-# ---- State Definition ----
-class AgentState(TypedDict):
-    query: str
-    result: str
+workflow.add_node("manager", manager_agent)
 
+workflow.add_node("librarian", librarian_agent)
+workflow.add_node("clerk", clerk_agent)
 
-# ---- Nodes ----
-def route_node(state: AgentState) -> AgentState:
-    decision = manager_agent(state["query"])
-    return {"query": state["query"], "result": decision}
-
-
-def viewer_node(state: AgentState) -> AgentState:
-    response = viewer_agent(state["query"])
-    return {"query": state["query"], "result": response}
-
-
-def clerk_node(state: AgentState) -> AgentState:
-    response = clerk_agent(state["query"])
-    return {"query": state["query"], "result": response}
-
-
-# ---- Graph ----
-graph = StateGraph(AgentState)
-
-graph.add_node("router", route_node)
-graph.add_node("viewer", viewer_node)
-graph.add_node("clerk", clerk_node)
-
-graph.set_entry_point("router")
-
-graph.add_conditional_edges(
-    "router",
-    lambda state: state["result"],
+workflow.add_conditional_edges(
+    "manager",
+    lambda state: state["route"],
     {
-        "viewer": "viewer",
+        "librarian": "librarian",
         "clerk": "clerk",
-    },
+    }
 )
 
-graph.add_edge("viewer", END)
-graph.add_edge("clerk", END)
+workflow.set_entry_point("manager")
 
-workflow = graph.compile()
+graph = workflow.compile()

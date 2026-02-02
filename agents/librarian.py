@@ -1,26 +1,22 @@
-from tools.inventory_tools import get_all_products, get_stock, normalize_product_name
+from tools.inventory_tools import get_stock
 
+    # existing stock logic...
 
-def viewer_agent(query: str):
-    query = query.lower().strip()
+def librarian_agent(state: dict) -> dict:
+    query = state["query"].lower()
 
-    # ---- List all products ----
-    if "list" in query or "all products" in query:
-        products = get_all_products()
-        if not products:
-            return "Inventory is empty."
+    product = (
+        query.replace("how many", "")
+        .replace("stock", "")
+        .strip()
+    )
 
-        return "\n".join(f"{name}: {stock}" for name, stock in products)
+    result = get_stock(product)
 
-    # ---- Stock query ----
-    words = query.split()
+    if result is None:
+       state["response"] = f"No product named '{product}' found."
+    else:
+       state["response"] = f"There are {result} {product} available in stock."
+    
+    return state
 
-    # try last 2 words, then last 1 word (blue pens / pens)
-    for size in (2, 1):
-        product_name = " ".join(words[-size:])
-        product_name = normalize_product_name(product_name)
-
-        stock = get_stock(product_name)
-        return f"{stock} in stock"
-
-    return "Product not found"

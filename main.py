@@ -1,22 +1,26 @@
+from graph.workflow import graph
 from tools.inventory_tools import cleanup_duplicates
+cleanup_duplicates()
 
 
-from graph.workflow import workflow
+print("🤖 Inventory Assistant (type 'exit' to quit)")
 
+while True:
+    user_input = input("You: ").strip()
+    
+    if user_input.lower() == "exit":
+        print("Bot: Goodbye! 👋")
+        break
 
-def main():
-    print("Inventory Assistant (type 'exit' to quit)")
+    if not user_input:
+        print("Bot: Please type something!")
+        continue
 
-    while True:
-        user_input = input("You: ").strip()
+    try:
+        state = {"query": user_input}
+        final_state = graph.invoke(state)
+        response = final_state.get("response", "Sorry, I didn't understand that.")
+    except Exception as e:
+        response = f"Oops! Something went wrong: {e}"
 
-        if user_input.lower() == "exit":
-            print("Bot: Goodbye!")
-            break
-
-        result = workflow.invoke({"query": user_input})
-        print(f"Bot: {result['result']}")
-
-
-if __name__ == "__main__":
-    main()
+    print("Bot:", response)
