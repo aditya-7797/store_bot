@@ -1,6 +1,11 @@
 langchain
 langchain-openai
+langchain-groq
 langgraph
 langsmith
 python-dotenv
 sqlite-utils
+streamlit
+sounddevice
+soundfile
+groq

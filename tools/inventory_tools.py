@@ -1,4 +1,6 @@
 from tools.db import get_connection
+import re
+
 # ---------- Helper ----------
 def normalize_product_name(name: str) -> str:
     name = name.lower().strip()
@@ -11,6 +13,44 @@ def normalize_product_name(name: str) -> str:
         return name[:-1]
 
     return name
+
+
+def extract_product_name(query: str) -> str:
+    """
+    Extracts product name from query by removing:
+    - Punctuation
+    - Numbers
+    - Common stop words
+    - Operation keywords
+    """
+    # Convert to lowercase
+    query = query.lower().strip()
+    
+    # Remove punctuation
+    query = re.sub(r'[?.,!;:\(\)]', '', query)
+    
+    # Remove numbers
+    query = re.sub(r'\d+', '', query)
+    
+    # Comprehensive stop words list
+    stop_words = [
+        'how', 'many', 'is', 'are', 'the', 'in', 'stock', 'available',
+        'add', 'sell', 'update', 'with', 'addition', 'of', 'to', 'from',
+        'remove', 'delete', 'quantity', 'item', 'items', 'product', 'products',
+        'now', 'currently', 'right', 'more', 'some', 'any', 'there', 'here',
+        'do', 'does', 'we', 'have', 'please', 'can', 'you', 'tell', 'me',
+        'what', 'whats', 'check', 'get', 'show', 'give', 'then', 'and', 'or',
+        'but', 'so', 'for', 'at', 'on', 'about', 'into', 'through', 'during',
+        'before', 'after', 'above', 'below', 'up', 'down', 'out', 'off', 'over',
+        'under', 'again', 'further', 'then', 'once'
+    ]
+    
+    words = query.split()
+    filtered_words = [word for word in words if word and word not in stop_words]
+    
+    # Join and normalize
+    product = ' '.join(filtered_words).strip()
+    return normalize_product_name(product)
 
 
 # ---------- Read Operations ----------

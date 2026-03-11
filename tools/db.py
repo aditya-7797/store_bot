@@ -1,7 +1,8 @@
 import sqlite3
 import os
 
-DB_PATH = os.path.join(os.path.dirname(__file__), "inventory.db")
+# Point to the database in the root folder, not the tools folder
+DB_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "inventory.db")
 
 def get_connection():
     conn = sqlite3.connect(DB_PATH)

@@ -1,18 +1,31 @@
-from tools.inventory_tools import get_stock, update_stock
+from tools.inventory_tools import get_stock, update_stock, extract_product_name
+import re
+
 def clerk_agent(state: dict):
-    query = state["query"].lower()
+    query = state["query"]
 
-    quantity = int([s for s in query.split() if s.isdigit()][0])
+    # Extract quantity
+    numbers = re.findall(r'\d+', query)
+    if not numbers:
+        state["response"] = "Please specify a quantity (number)."
+        return state
+    
+    quantity = int(numbers[0])
 
-    if "add" in query:
-        product = query.replace("add", "").replace(str(quantity), "").strip()
+    # Extract product name
+    product = extract_product_name(query)
+    
+    if not product:
+        state["response"] = "Please specify a product name."
+        return state
+
+    if "add" in query.lower():
         update_stock(product, quantity)
         stock = get_stock(product)
         state["response"] = f"Added {quantity} {product}. Current stock: {stock}."
         return state
 
-    if "sell" in query:
-        product = query.replace("sell", "").replace(str(quantity), "").strip()
+    if "sell" in query.lower():
         stock = get_stock(product)
 
         if stock < quantity:
