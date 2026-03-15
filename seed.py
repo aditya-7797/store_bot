@@ -7,13 +7,16 @@ with open("schema.sql") as f:
     cur.executescript(f.read())
 
 products = [
+    ("biscuit box", 30),
     ("blue pen", 100),
     ("oil bottle", 50),
-    ("biscuit box", 30)
+    ("g soap", 60),
 ]
 
+# Clear existing products and re-insert clean data
+cur.execute("DELETE FROM products")
 cur.executemany(
-    "INSERT OR IGNORE INTO products (name, stock) VALUES (?, ?)",
+    "INSERT INTO products (name, stock) VALUES (?, ?)",
     products
 )
 

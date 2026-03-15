@@ -256,11 +256,81 @@ elif page == "📦 Inventory":
             color='stock',
             color_continuous_scale='Viridis'
         )
-        fig.update_layout(height=500)
+        fig.update_layout(height=400)
         st.plotly_chart(fig, use_container_width=True)
         
     else:
         st.warning("Cannot load inventory data. Make sure backend is running.")
+
+    # ---- Stock Management Forms ----
+    st.markdown("---")
+    st.subheader("🛠️ Manage Stock")
+
+    tab1, tab2, tab3 = st.tabs(["➕ Add New Product", "📈 Restock Existing", "📉 Sell / Remove"])
+
+    # --- Tab 1: Add New Product ---
+    with tab1:
+        st.markdown("Add a brand new product to the inventory.")
+        with st.form("add_new_product_form"):
+            new_name = st.text_input("Product Name", placeholder="e.g. red marker")
+            new_qty = st.number_input("Initial Stock Quantity", min_value=1, value=10, step=1)
+            submitted = st.form_submit_button("Add Product")
+
+        if submitted:
+            if not new_name.strip():
+                st.error("Please enter a product name.")
+            else:
+                result = call_api("/api/inventory/update", method="POST", data={
+                    "product_name": new_name.strip().lower(),
+                    "quantity": int(new_qty)
+                })
+                if result:
+                    st.success(f"✅ '{new_name.strip()}' added with {new_qty} units.")
+                    st.rerun()
+
+    # --- Tab 2: Restock Existing ---
+    with tab2:
+        st.markdown("Add more stock to an existing product.")
+        products_data2 = call_api("/api/inventory/products")
+        if products_data2:
+            product_names = [p["name"] for p in products_data2]
+            with st.form("restock_form"):
+                selected = st.selectbox("Select Product", product_names)
+                restock_qty = st.number_input("Quantity to Add", min_value=1, value=10, step=1)
+                restock_btn = st.form_submit_button("Add Stock")
+
+            if restock_btn:
+                result = call_api("/api/inventory/update", method="POST", data={
+                    "product_name": selected,
+                    "quantity": int(restock_qty)
+                })
+                if result:
+                    st.success(f"✅ Added {restock_qty} units to '{selected}'. New stock: {result.get('new_stock')}")
+                    st.rerun()
+        else:
+            st.warning("Cannot load products. Make sure backend is running.")
+
+    # --- Tab 3: Sell / Remove ---
+    with tab3:
+        st.markdown("Sell or remove units from an existing product.")
+        products_data3 = call_api("/api/inventory/products")
+        if products_data3:
+            product_names3 = [p["name"] for p in products_data3]
+            with st.form("sell_form"):
+                sell_selected = st.selectbox("Select Product", product_names3)
+                sell_qty = st.number_input("Quantity to Sell/Remove", min_value=1, value=1, step=1)
+                sell_btn = st.form_submit_button("Sell / Remove")
+
+            if sell_btn:
+                result = call_api("/api/inventory/update", method="POST", data={
+                    "product_name": sell_selected,
+                    "quantity": -int(sell_qty)
+                })
+                if result:
+                    st.success(f"✅ Removed {sell_qty} units from '{sell_selected}'. New stock: {result.get('new_stock')}")
+                    st.rerun()
+        else:
+            st.warning("Cannot load products. Make sure backend is running.")
 
 # ==================== PAGE 4: Analytics ====================
 
