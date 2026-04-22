@@ -13,6 +13,7 @@ import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from backend.config import settings
+from backend.models.apriori_analysis import get_apriori_rules
 from graph.workflow import graph
 from tools.inventory_tools import get_all_products, get_stock, update_stock
 
@@ -148,6 +149,36 @@ async def get_top_products(limit: int = 5):
         "message": "Top products analysis - Coming soon",
         "requires": "Sales transaction data"
     }
+
+
+@app.get("/api/analytics/apriori-rules")
+async def get_market_basket_rules(
+    min_support: float = 0.02,
+    min_confidence: float = 0.25,
+    min_lift: float = 1.0,
+    top_n: int = 20,
+):
+    """Return Apriori association rules for market basket analysis."""
+    try:
+        if not (0 < min_support <= 1):
+            raise HTTPException(status_code=400, detail="min_support must be between 0 and 1")
+        if not (0 < min_confidence <= 1):
+            raise HTTPException(status_code=400, detail="min_confidence must be between 0 and 1")
+        if min_lift <= 0:
+            raise HTTPException(status_code=400, detail="min_lift must be > 0")
+        if top_n <= 0:
+            raise HTTPException(status_code=400, detail="top_n must be > 0")
+
+        return get_apriori_rules(
+            min_support=min_support,
+            min_confidence=min_confidence,
+            min_lift=min_lift,
+            top_n=top_n,
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Apriori analysis error: {str(e)}")
 
 # ==================== Forecasting Endpoints (Placeholder) ====================
 

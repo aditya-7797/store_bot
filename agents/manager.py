@@ -13,8 +13,9 @@ routing_prompt = ChatPromptTemplate.from_messages([
 Analyze the user's query and classify it into ONE of these categories:
 - "librarian" - for checking stock levels, availability, listing products
 - "clerk" - for adding items to stock, selling/removing items from stock
+- "analytics" - for product recommendations, bundle suggestions, association queries like what sells with what
 
-Respond with ONLY ONE WORD: either "librarian" or "clerk"
+Respond with ONLY ONE WORD: either "librarian", "clerk", or "analytics"
 
 Examples:
 - "how many pens do we have?" → librarian
@@ -22,7 +23,10 @@ Examples:
 - "sell 5 bottles" → clerk
 - "what's in stock?" → librarian
 - "check oil bottle availability" → librarian
-- "update stock with 10 markers" → clerk"""),
+- "update stock with 10 markers" → clerk
+- "what can I sell with bread loaf" → analytics
+- "which products are bought together with tea powder" → analytics
+- "recommend bundle for milk packet" → analytics"""),
     ("user", "{query}")
 ])
 
@@ -37,7 +41,7 @@ def manager_agent(state: dict):
         route = result.content.strip().lower()
         
         # Validate the route
-        if route in ["librarian", "clerk"]:
+        if route in ["librarian", "clerk", "analytics"]:
             state["route"] = route
         else:
             # Fallback to librarian if LLM returns something unexpected
@@ -45,7 +49,16 @@ def manager_agent(state: dict):
     except Exception as e:
         # Fallback routing if LLM fails
         query_lower = query.lower()
-        if "add" in query_lower or "sell" in query_lower or "update" in query_lower:
+        if (
+            "sell with" in query_lower
+            or "buy with" in query_lower
+            or "bought together" in query_lower
+            or "recommend" in query_lower
+            or "bundle" in query_lower
+            or "pair with" in query_lower
+        ):
+            state["route"] = "analytics"
+        elif "add" in query_lower or "sell" in query_lower or "update" in query_lower:
             state["route"] = "clerk"
         else:
             state["route"] = "librarian"

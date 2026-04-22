@@ -7,6 +7,7 @@ CREATE TABLE IF NOT EXISTS products
 
 CREATE TABLE IF NOT EXISTS sales (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
+    transaction_id TEXT,
     product_id INTEGER,
     quantity INTEGER,
     price REAL,

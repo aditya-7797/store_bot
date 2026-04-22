@@ -336,16 +336,74 @@ elif page == "📦 Inventory":
 
 elif page == "📈 Analytics":
     st.title("📈 Business Analytics")
-    st.markdown("### Sales and profit analysis")
-    
-    st.info("🚧 **Coming in Phase 2**\n\nThis section will include:\n- Sales trends\n- Profit analysis\n- Product performance\n- Revenue breakdown")
-    
-    # Placeholder charts
-    st.subheader("📊 Monthly Revenue")
-    months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun']
-    revenue = [45000, 52000, 48000, 61000, 58000, 67000]
-    fig = px.bar(x=months, y=revenue, labels={'x': 'Month', 'y': 'Revenue (₹)'})
-    st.plotly_chart(fig, use_container_width=True)
+    st.markdown("### Market Basket Analysis (Apriori)")
+
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        min_support = st.slider("Min Support", min_value=0.005, max_value=0.2, value=0.02, step=0.005)
+    with col2:
+        min_confidence = st.slider("Min Confidence", min_value=0.05, max_value=0.9, value=0.25, step=0.05)
+    with col3:
+        min_lift = st.slider("Min Lift", min_value=0.5, max_value=3.0, value=1.0, step=0.1)
+    with col4:
+        top_n = st.slider("Top Rules", min_value=5, max_value=50, value=20, step=5)
+
+    endpoint = (
+        f"/api/analytics/apriori-rules?min_support={min_support}"
+        f"&min_confidence={min_confidence}&min_lift={min_lift}&top_n={top_n}"
+    )
+    analysis = call_api(endpoint)
+
+    if not analysis:
+        st.warning("Unable to fetch Apriori analysis. Ensure backend is running and data is seeded.")
+    else:
+        summary = analysis.get("summary", {})
+        rules = analysis.get("rules", [])
+
+        s1, s2, s3, s4 = st.columns(4)
+        s1.metric("Transactions", summary.get("transactions", 0))
+        s2.metric("Distinct Products", summary.get("distinct_products", 0))
+        s3.metric("Frequent Itemsets", summary.get("frequent_itemsets", 0))
+        s4.metric("Rules", summary.get("rules", 0))
+
+        if not rules:
+            st.info("No rules found for these thresholds. Try lowering support/confidence.")
+        else:
+            rules_df = pd.DataFrame(rules)
+            rules_df["antecedent"] = rules_df["antecedents"].apply(lambda x: ", ".join(x))
+            rules_df["consequent"] = rules_df["consequents"].apply(lambda x: ", ".join(x))
+            rules_df["rule"] = rules_df["antecedent"] + " → " + rules_df["consequent"]
+
+            st.markdown("---")
+            st.subheader("📋 Top Association Rules")
+            st.dataframe(
+                rules_df[["rule", "support", "confidence", "lift", "leverage", "conviction"]],
+                use_container_width=True,
+                height=360,
+            )
+
+            st.markdown("---")
+            st.subheader("🎯 Confidence vs Lift")
+            bubble_fig = px.scatter(
+                rules_df,
+                x="confidence",
+                y="lift",
+                size="support",
+                hover_name="rule",
+                color="lift",
+                color_continuous_scale="Viridis",
+            )
+            bubble_fig.update_layout(height=420)
+            st.plotly_chart(bubble_fig, use_container_width=True)
+
+            st.markdown("---")
+            st.subheader("💡 Suggested Bundle Actions")
+            top3 = rules_df.sort_values(["lift", "confidence"], ascending=False).head(3)
+            for _, row in top3.iterrows():
+                st.write(
+                    f"- If customer buys **{row['antecedent']}**, recommend **{row['consequent']}** "
+                    f"(confidence: {row['confidence']:.2f}, lift: {row['lift']:.2f})"
+                )
 
 # ==================== PAGE 5: Forecasting ====================
 
