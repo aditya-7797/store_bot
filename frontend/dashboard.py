@@ -8,6 +8,8 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 from datetime import datetime, timedelta
+from pathlib import Path
+import matplotlib.pyplot as plt
 
 # ==================== Configuration ====================
 
@@ -20,6 +22,19 @@ st.set_page_config(
 
 # Backend API URL
 API_BASE_URL = "http://localhost:8000"
+TARGET_FORECAST_PRODUCTS = [
+    "Rice",
+    "Wheat Flour",
+    "Milk",
+    "Sugar",
+    "Salt",
+    "Cooking Oil",
+    "Eggs",
+    "Bread",
+    "Tea",
+    "Coffee",
+]
+DATASET_PATH = Path(__file__).resolve().parent.parent / "grocery_sales_dataset.csv"
 
 # ==================== Custom Styling ====================
 
@@ -86,6 +101,49 @@ def call_api(endpoint: str, method: str = "GET", data: dict = None):
     except Exception as e:
         st.error(f"Error: {str(e)}")
         return None
+
+
+@st.cache_data(show_spinner=False)
+def load_forecasting_dataset() -> pd.DataFrame:
+    """Load grocery sales dataset for forecasting."""
+    df = pd.read_csv(DATASET_PATH)
+    df["date"] = pd.to_datetime(df["date"], dayfirst=True, errors="coerce")
+    df = df.dropna(subset=["date"])
+    return df
+
+
+def prepare_prophet_product_data(df: pd.DataFrame, product_name: str) -> pd.DataFrame:
+    """Prepare Prophet-formatted daily sales dataframe for one product."""
+    product_df = df[df["product_name"] == product_name].copy()
+    if product_df.empty:
+        return pd.DataFrame(columns=["ds", "y"])
+
+    daily = (
+        product_df.groupby("date", as_index=False)["quantity"]
+        .sum()
+        .rename(columns={"date": "ds", "quantity": "y"})
+        .sort_values("ds")
+    )
+    full_dates = pd.date_range(daily["ds"].min(), daily["ds"].max(), freq="D")
+    daily = (
+        daily.set_index("ds")
+        .reindex(full_dates)
+        .fillna(0.0)
+        .rename_axis("ds")
+        .reset_index()
+    )
+    return daily
+
+
+def run_prophet_for_product(prophet_df: pd.DataFrame, forecast_days: int) -> pd.DataFrame:
+    """Train Prophet model and return forecast dataframe."""
+    from prophet import Prophet
+
+    model = Prophet(daily_seasonality=True, weekly_seasonality=True, yearly_seasonality=True)
+    model.fit(prophet_df)
+    future = model.make_future_dataframe(periods=forecast_days, freq="D")
+    forecast = model.predict(future)
+    return model, forecast
 
 # ==================== PAGE 1: Dashboard ====================
 
@@ -409,17 +467,118 @@ elif page == "📈 Analytics":
 
 elif page == "🔮 Forecasting":
     st.title("🔮 Sales Forecasting")
-    st.markdown("### AI-powered demand prediction")
-    
-    st.info("🚧 **Coming in Phase 3**\n\nThis section will include:\n- Product demand forecasting (ARIMA/Prophet)\n- Seasonal trend analysis\n- Stock recommendations\n- Confidence intervals")
-    
-    # Placeholder
-    st.subheader("Select Product to Forecast")
-    product = st.selectbox("Product", ["Blue Pen", "Oil Bottle", "Biscuit Box"])
-    days = st.slider("Forecast Days", 7, 90, 30)
-    
-    if st.button("Generate Forecast"):
-        st.warning("Forecasting model not yet implemented. Coming in Phase 3!")
+    st.markdown("### Product-wise Prophet Forecasting")
+    st.caption("Install dependency if needed: `pip install prophet`")
+
+    try:
+        from prophet import Prophet  # noqa: F401
+    except ImportError:
+        st.error("Prophet is not installed. Run: pip install prophet")
+        st.stop()
+
+    if not DATASET_PATH.exists():
+        st.error(f"Dataset not found: {DATASET_PATH}")
+        st.stop()
+
+    sales_df = load_forecasting_dataset()
+
+    col_a, col_b = st.columns([2, 1])
+    with col_a:
+        selected_products = st.multiselect(
+            "Products to forecast",
+            TARGET_FORECAST_PRODUCTS,
+            default=TARGET_FORECAST_PRODUCTS,
+        )
+    with col_b:
+        forecast_days = st.slider("Forecast Days", min_value=7, max_value=90, value=30, step=1)
+
+    if st.button("Generate Product-wise Forecast", type="primary"):
+        if not selected_products:
+            st.warning("Please select at least one product.")
+            st.stop()
+
+        all_rows = []
+        summary_rows = []
+
+        for product in selected_products:
+            st.markdown("---")
+            st.subheader(f"📦 {product}")
+
+            prophet_df = prepare_prophet_product_data(sales_df, product)
+            if prophet_df.empty:
+                st.warning(f"No historical data available for {product}.")
+                summary_rows.append(
+                    {
+                        "product_name": product,
+                        "total_expected_sales_next_month": 0.0,
+                        "status": "No historical data",
+                    }
+                )
+                continue
+
+            with st.spinner(f"Training Prophet model for {product}..."):
+                model, forecast = run_prophet_for_product(prophet_df, forecast_days)
+
+            next_period = forecast.tail(forecast_days).copy()
+            next_period["product_name"] = product
+            next_period = next_period[
+                ["product_name", "ds", "yhat", "yhat_lower", "yhat_upper"]
+            ].reset_index(drop=True)
+            all_rows.append(next_period)
+
+            total_sales = float(next_period["yhat"].sum())
+            summary_rows.append(
+                {
+                    "product_name": product,
+                    "total_expected_sales_next_month": total_sales,
+                    "status": "Forecast generated",
+                }
+            )
+
+            st.metric("Total expected sales (selected period)", f"{total_sales:.2f}")
+            st.dataframe(next_period[["ds", "yhat", "yhat_lower", "yhat_upper"]], use_container_width=True)
+
+            line_fig = px.line(
+                next_period,
+                x="ds",
+                y="yhat",
+                title=f"{product} - Forecast for Next {forecast_days} Days",
+            )
+            line_fig.add_scatter(
+                x=next_period["ds"],
+                y=next_period["yhat_lower"],
+                mode="lines",
+                name="Lower Bound",
+                line=dict(dash="dash"),
+            )
+            line_fig.add_scatter(
+                x=next_period["ds"],
+                y=next_period["yhat_upper"],
+                mode="lines",
+                name="Upper Bound",
+                line=dict(dash="dash"),
+            )
+            st.plotly_chart(line_fig, use_container_width=True)
+
+            st.markdown("**Trend and Seasonality**")
+            comp_fig = model.plot_components(forecast)
+            st.pyplot(comp_fig)
+            plt.close(comp_fig)
+
+        st.markdown("---")
+        st.subheader("📊 Total Expected Sales (Next Month)")
+        summary_df = pd.DataFrame(summary_rows)
+        st.dataframe(summary_df, use_container_width=True)
+
+        if all_rows:
+            combined_forecast = pd.concat(all_rows, ignore_index=True)
+            csv_data = combined_forecast.to_csv(index=False).encode("utf-8")
+            st.download_button(
+                label="⬇️ Download Forecast CSV",
+                data=csv_data,
+                file_name="product_wise_prophet_forecast_next_30_days.csv",
+                mime="text/csv",
+            )
 
 # ==================== PAGE 6: Customers ====================
 
