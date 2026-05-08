@@ -113,14 +113,14 @@ def call_api(endpoint: str, method: str = "GET", data: dict = None):
         return None
 
 
+@st.cache_data(show_spinner=False)
 def load_forecasting_dataset() -> pd.DataFrame:
-    """Load live sales history for forecasting."""
-    df = load_sales_history().copy()
-    if df.empty:
+    """Load grocery sales CSV dataset for forecasting."""
+    csv_path = ROOT_DIR / "grocery_sales_dataset.csv"
+    if not csv_path.exists():
         return pd.DataFrame(columns=["date", "product_name", "quantity"])
-
-    df = df.rename(columns={"sale_date": "date"})
-    df["date"] = pd.to_datetime(df["date"], errors="coerce")
+    df = pd.read_csv(csv_path)
+    df["date"] = pd.to_datetime(df["date"], dayfirst=True, errors="coerce")
     df = df.dropna(subset=["date"])
     return df
 
