@@ -6,6 +6,8 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional, List, Dict, Any
+from datetime import datetime
+import sqlite3
 import sys
 import os
 
@@ -15,6 +17,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from backend.config import settings
 from backend.models.apriori_analysis import get_apriori_rules
 from graph.workflow import graph
+from tools.customer_analytics import append_customer_transaction, build_product_price_map, build_sales_trend, build_top_selling_products, customer_summary_payload
 from tools.inventory_tools import get_all_products, get_stock, update_stock
 
 app = FastAPI(
@@ -49,6 +52,14 @@ class Product(BaseModel):
 class StockUpdate(BaseModel):
     product_name: str
     quantity: int
+
+class SalesTransactionRequest(BaseModel):
+    customer_id: int
+    product_name: str
+    quantity: int
+    purchase_date: Optional[str] = None
+    transaction_id: Optional[str] = None
+    unit_price: Optional[float] = None
 
 # ==================== Health Check ====================
 
@@ -130,6 +141,78 @@ async def update_product_stock(update: StockUpdate):
 
 # ==================== Analytics Endpoints (Placeholder) ====================
 
+@app.post("/api/transactions/record")
+async def record_transaction(request: SalesTransactionRequest):
+    """Record a live transaction into the sales table and customer transaction CSV."""
+    try:
+        if request.quantity <= 0:
+            raise HTTPException(status_code=400, detail="quantity must be greater than 0")
+
+        product_name = request.product_name.strip().lower()
+        conn = None
+        try:
+            conn = sqlite3.connect(settings.SQLITE_DB)
+            conn.row_factory = sqlite3.Row
+            cur = conn.cursor()
+
+            cur.execute("SELECT id, stock, name FROM products WHERE lower(name) = lower(?)", (product_name,))
+            product_row = cur.fetchone()
+            if not product_row:
+                raise HTTPException(status_code=404, detail=f"Product not found: {request.product_name}")
+
+            product_id = int(product_row["id"])
+            current_stock = int(product_row["stock"])
+            if current_stock < request.quantity:
+                raise HTTPException(status_code=400, detail=f"Not enough stock for {request.product_name}. Available: {current_stock}")
+
+            price_lookup = build_product_price_map()
+            if request.unit_price is not None:
+                unit_price = float(request.unit_price)
+            else:
+                unit_price = float(price_lookup.get(product_id, 0.0))
+
+            transaction_id = request.transaction_id or f"TX-{datetime.utcnow().strftime('%Y%m%d%H%M%S%f')[:18]}"
+            purchase_date = request.purchase_date or datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+
+            cur.execute(
+                "UPDATE products SET stock = stock - ? WHERE id = ?",
+                (request.quantity, product_id),
+            )
+            cur.execute(
+                "INSERT INTO sales (transaction_id, product_id, quantity, price, created_at) VALUES (?, ?, ?, ?, ?)",
+                (transaction_id, product_id, request.quantity, unit_price, purchase_date),
+            )
+            conn.commit()
+        finally:
+            if conn is not None:
+                conn.close()
+
+        append_customer_transaction({
+            "transaction_id": transaction_id,
+            "customer_id": request.customer_id,
+            "product_id": product_id,
+            "quantity": request.quantity,
+            "purchase_date": purchase_date,
+            "price": unit_price,
+        })
+
+        return {
+            "message": "Transaction recorded successfully",
+            "transaction_id": transaction_id,
+            "customer_id": request.customer_id,
+            "product_id": product_id,
+            "product_name": request.product_name,
+            "quantity": request.quantity,
+            "unit_price": unit_price,
+            "purchase_date": purchase_date,
+            "remaining_stock": current_stock - request.quantity,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Transaction record error: {str(e)}")
+
+
 @app.get("/api/analytics/summary")
 async def get_analytics_summary():
     """Get overall business analytics summary"""
@@ -149,6 +232,30 @@ async def get_top_products(limit: int = 5):
         "message": "Top products analysis - Coming soon",
         "requires": "Sales transaction data"
     }
+
+
+@app.get("/api/analytics/sales-trend")
+async def get_sales_trend():
+    """Return daily sales trend from the SQLite sales table."""
+    try:
+        trend = build_sales_trend()
+        return {"trend": trend.to_dict(orient="records")}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Sales trend error: {str(e)}")
+
+
+@app.get("/api/analytics/top-selling-products")
+async def get_top_selling_products(limit: int = 5):
+    """Return top selling products from the SQLite sales table."""
+    try:
+        if limit <= 0:
+            raise HTTPException(status_code=400, detail="limit must be > 0")
+        top_products = build_top_selling_products(top_n=limit)
+        return {"products": top_products.to_dict(orient="records")}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Top selling products error: {str(e)}")
 
 
 @app.get("/api/analytics/apriori-rules")
@@ -203,6 +310,25 @@ async def get_customer_segments():
         "message": "Customer segmentation - Coming in Phase 3",
         "requires": "Customer purchase history"
     }
+
+
+@app.get("/api/customers/summary")
+async def get_customer_summary():
+    """Return customer master data, RFM metrics, and clustering summaries."""
+    try:
+        payload = customer_summary_payload()
+        return {
+            "customer_count": payload["customer_count"],
+            "active_customers": payload["active_customers"],
+            "total_spent": payload["total_spent"],
+            "average_order_value": payload["average_order_value"],
+            "segment_counts": payload["segment_counts"].to_dict(orient="records"),
+            "kmeans_stats": payload["kmeans_stats"].to_dict(orient="records"),
+            "top_customers": payload["top_customers"].to_dict(orient="records"),
+            "category_counts": payload["category_counts"].to_dict(orient="records"),
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Customer analytics error: {str(e)}")
 
 if __name__ == "__main__":
     import uvicorn

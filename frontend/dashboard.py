@@ -11,6 +11,8 @@ from datetime import datetime, timedelta
 from pathlib import Path
 import matplotlib.pyplot as plt
 
+from tools.customer_analytics import customer_summary_payload, load_customers, load_sales_history
+
 # ==================== Configuration ====================
 
 st.set_page_config(
@@ -34,7 +36,15 @@ TARGET_FORECAST_PRODUCTS = [
     "Tea",
     "Coffee",
 ]
-DATASET_PATH = Path(__file__).resolve().parent.parent / "grocery_sales_dataset.csv"
+ROOT_DIR = Path(__file__).resolve().parent.parent
+DATA_DIR = ROOT_DIR / "data"
+
+
+def _resolve_dataset_path(filename: str) -> Path:
+    for candidate in (DATA_DIR / filename, ROOT_DIR / filename):
+        if candidate.exists():
+            return candidate
+    return DATA_DIR / filename
 
 # ==================== Custom Styling ====================
 
@@ -103,13 +113,21 @@ def call_api(endpoint: str, method: str = "GET", data: dict = None):
         return None
 
 
-@st.cache_data(show_spinner=False)
 def load_forecasting_dataset() -> pd.DataFrame:
-    """Load grocery sales dataset for forecasting."""
-    df = pd.read_csv(DATASET_PATH)
-    df["date"] = pd.to_datetime(df["date"], dayfirst=True, errors="coerce")
+    """Load live sales history for forecasting."""
+    df = load_sales_history().copy()
+    if df.empty:
+        return pd.DataFrame(columns=["date", "product_name", "quantity"])
+
+    df = df.rename(columns={"sale_date": "date"})
+    df["date"] = pd.to_datetime(df["date"], errors="coerce")
     df = df.dropna(subset=["date"])
     return df
+
+
+def load_customer_insights() -> dict:
+    """Load customer datasets and derived analytics."""
+    return customer_summary_payload()
 
 
 def prepare_prophet_product_data(df: pd.DataFrame, product_name: str) -> pd.DataFrame:
@@ -150,36 +168,38 @@ def run_prophet_for_product(prophet_df: pd.DataFrame, forecast_days: int) -> pd.
 if page == "📊 Dashboard":
     st.title("📊 Business Dashboard")
     st.markdown("### Overview of your retail operations")
+
+    customer_payload = load_customer_insights()
     
     # KPI Metrics
     col1, col2, col3, col4 = st.columns(4)
     
     with col1:
         st.metric(
-            label="Total Revenue",
-            value="₹2,45,000",
-            delta="+12% from last month"
+            label="Total Customers",
+            value=f"{customer_payload.get('customer_count', 0):,}",
+            delta="From customer dataset"
         )
     
     with col2:
         st.metric(
-            label="Total Products",
-            value="150",
-            delta="+5 new products"
+            label="Active Customers",
+            value=f"{customer_payload.get('active_customers', 0):,}",
+            delta="Last 30 days"
         )
     
     with col3:
         st.metric(
-            label="Profit Margin",
-            value="23.5%",
-            delta="+2.1%"
+            label="Total Revenue",
+            value=f"₹{customer_payload.get('total_spent', 0.0):,.0f}",
+            delta="From RFM data"
         )
     
     with col4:
         st.metric(
-            label="Active Customers",
-            value="567",
-            delta="+15%"
+            label="Avg. Order Value",
+            value=f"₹{customer_payload.get('average_order_value', 0.0):,.0f}",
+            delta="Customer spend"
         )
     
     st.markdown("---")
@@ -189,33 +209,50 @@ if page == "📊 Dashboard":
     
     with col_left:
         st.subheader("📈 Sales Trend (Last 30 Days)")
-        # Sample data - replace with real data
-        dates = pd.date_range(end=datetime.now(), periods=30, freq='D')
-        sales = pd.DataFrame({
-            'Date': dates,
-            'Sales': [8000 + i*100 + (i%7)*500 for i in range(30)]
-        })
-        fig = px.line(sales, x='Date', y='Sales', markers=True)
-        fig.update_layout(height=350)
-        st.plotly_chart(fig, use_container_width=True)
+        trend_data = call_api("/api/analytics/sales-trend")
+        if trend_data and trend_data.get("trend"):
+            trend_df = pd.DataFrame(trend_data["trend"])
+            trend_df["date"] = pd.to_datetime(trend_df["date"])
+            trend_df = trend_df.sort_values("date").tail(30)
+            trend_fig = px.line(
+                trend_df,
+                x="date",
+                y="total_revenue",
+                markers=True,
+                labels={"date": "Date", "total_revenue": "Revenue (₹)"},
+            )
+            trend_fig.update_layout(height=350)
+            st.plotly_chart(trend_fig, use_container_width=True)
+        else:
+            st.info("Sales trend data is not available yet.")
     
     with col_right:
         st.subheader("🏆 Top Products")
-        # Get products from API
-        products_data = call_api("/api/inventory/products")
-        if products_data:
-            df = pd.DataFrame(products_data)
-            df = df.sort_values('stock', ascending=False).head(5)
-            fig = px.bar(df, x='name', y='stock', color='stock')
-            fig.update_layout(height=350, showlegend=False)
-            st.plotly_chart(fig, use_container_width=True)
+        top_products_data = call_api("/api/analytics/top-selling-products?limit=5")
+        if top_products_data and top_products_data.get("products"):
+            top_products_df = pd.DataFrame(top_products_data["products"])
+            top_products_fig = px.bar(
+                top_products_df,
+                x="product_name",
+                y="total_units",
+                color="total_units",
+                hover_data={"total_revenue": True},
+                labels={"product_name": "Product", "total_units": "Units Sold"},
+            )
+            top_products_fig.update_layout(height=350, showlegend=False)
+            st.plotly_chart(top_products_fig, use_container_width=True)
         else:
-            st.info("Start the FastAPI backend to see real data")
+            st.info("Sales-based top products data is not available yet.")
     
     # Recent Activity
     st.markdown("---")
     st.subheader("📋 Recent Transactions")
-    st.info("💡 Transaction tracking will be added in Phase 2")
+    sales_df = load_forecasting_dataset()
+    if not sales_df.empty:
+        display_cols = [col for col in ["date", "product_name", "quantity", "transaction_id", "price"] if col in sales_df.columns]
+        st.dataframe(sales_df.sort_values("date", ascending=False).head(10)[display_cols], use_container_width=True, height=320)
+    else:
+        st.info("No live transactions yet.")
 
 # ==================== PAGE 2: AI Assistant ====================
 
@@ -368,27 +405,50 @@ elif page == "📦 Inventory":
         else:
             st.warning("Cannot load products. Make sure backend is running.")
 
-    # --- Tab 3: Sell / Remove ---
+    # --- Tab 3: Record Sale ---
     with tab3:
-        st.markdown("Sell or remove units from an existing product.")
+        st.markdown("Record a live sale so the charts and customer stats update immediately.")
+        customers_data = load_customers()
         products_data3 = call_api("/api/inventory/products")
+
         if products_data3:
             product_names3 = [p["name"] for p in products_data3]
-            with st.form("sell_form"):
-                sell_selected = st.selectbox("Select Product", product_names3)
-                sell_qty = st.number_input("Quantity to Sell/Remove", min_value=1, value=1, step=1)
-                sell_btn = st.form_submit_button("Sell / Remove")
 
-            if sell_btn:
-                result = call_api("/api/inventory/update", method="POST", data={
+            with st.form("sell_form"):
+                # Customer selection: existing or new
+                col_cust_type, col_cust_input = st.columns(2)
+                with col_cust_type:
+                    cust_type = st.radio("Customer Type", ["Existing", "New"], horizontal=True)
+                
+                with col_cust_input:
+                    if cust_type == "Existing" and not customers_data.empty:
+                        customer_options = customers_data[[col for col in ["customer_id", "first_name", "last_name"] if col in customers_data.columns]].copy()
+                        customer_options["display"] = customer_options.apply(
+                            lambda row: f"{int(row['customer_id'])} - {row.get('first_name', '')} {row.get('last_name', '')}".strip(),
+                            axis=1,
+                        )
+                        selected_customer_display = st.selectbox("Select Customer", customer_options["display"].tolist())
+                        selected_customer_row = customer_options[customer_options["display"] == selected_customer_display].iloc[0]
+                        selected_customer_id = int(selected_customer_row["customer_id"])
+                    else:
+                        selected_customer_id = st.number_input("Customer ID", min_value=1, value=1001, step=1)
+                sell_selected = st.selectbox("Select Product", product_names3)
+                sell_qty = st.number_input("Quantity", min_value=1, value=1, step=1)
+                sale_date = st.date_input("Purchase Date")
+                submitted_sale = st.form_submit_button("Record Transaction")
+
+            if submitted_sale:
+                result = call_api("/api/transactions/record", method="POST", data={
+                    "customer_id": selected_customer_id,
                     "product_name": sell_selected,
-                    "quantity": -int(sell_qty)
+                    "quantity": int(sell_qty),
+                    "purchase_date": f"{sale_date} 12:00:00",
                 })
                 if result:
-                    st.success(f"✅ Removed {sell_qty} units from '{sell_selected}'. New stock: {result.get('new_stock')}")
+                    st.success(f"✅ Transaction {result.get('transaction_id')} recorded for customer {selected_customer_id}.")
                     st.rerun()
         else:
-            st.warning("Cannot load products. Make sure backend is running.")
+            st.warning("Cannot load customers or products. Make sure backend is running.")
 
 # ==================== PAGE 4: Analytics ====================
 
@@ -474,10 +534,6 @@ elif page == "🔮 Forecasting":
         from prophet import Prophet  # noqa: F401
     except ImportError:
         st.error("Prophet is not installed. Run: pip install prophet")
-        st.stop()
-
-    if not DATASET_PATH.exists():
-        st.error(f"Dataset not found: {DATASET_PATH}")
         st.stop()
 
     sales_df = load_forecasting_dataset()
@@ -585,19 +641,111 @@ elif page == "🔮 Forecasting":
 elif page == "👥 Customers":
     st.title("👥 Customer Intelligence")
     st.markdown("### Customer segmentation and analysis")
-    
-    st.info("🚧 **Coming in Phase 3**\n\nThis section will include:\n- Customer segmentation (K-Means)\n- RFM analysis\n- Buying patterns\n- Target group identification")
-    
-    # Placeholder
-    st.subheader("Customer Segments")
-    segments = pd.DataFrame({
-        'Segment': ['High Value', 'Regular', 'Budget', 'Occasional'],
-        'Count': [45, 120, 180, 222],
-        'Avg. Spend': [5000, 2000, 800, 300]
-    })
-    
-    fig = px.pie(segments, values='Count', names='Segment', title='Customer Distribution')
-    st.plotly_chart(fig, use_container_width=True)
+
+    customer_payload = load_customer_insights()
+    customers_df = customer_payload.get("customers", pd.DataFrame())
+    rfm_df = customer_payload.get("rfm", pd.DataFrame())
+    preferences_df = customer_payload.get("preferences", pd.DataFrame())
+    segment_counts = customer_payload.get("segment_counts", pd.DataFrame())
+    kmeans_stats = customer_payload.get("kmeans_stats", pd.DataFrame())
+    kmeans_assignments = customer_payload.get("kmeans_assignments", pd.DataFrame())
+    top_customers = customer_payload.get("top_customers", pd.DataFrame())
+    category_counts = customer_payload.get("category_counts", pd.DataFrame())
+
+    if customers_df.empty and rfm_df.empty:
+        st.info("Place customers.csv, transactions.csv, rfm_segments.csv, and preferences.csv inside data/ to unlock this page.")
+    else:
+        col1, col2, col3, col4 = st.columns(4)
+        col1.metric("Customers", f"{customer_payload.get('customer_count', 0):,}")
+        col2.metric("Active Customers", f"{customer_payload.get('active_customers', 0):,}")
+        col3.metric("Total Spend", f"₹{customer_payload.get('total_spent', 0.0):,.0f}")
+        col4.metric("Avg Order Value", f"₹{customer_payload.get('average_order_value', 0.0):,.0f}")
+
+        st.markdown("---")
+        left_col, right_col = st.columns(2)
+
+        with left_col:
+            st.subheader("RFM Segments")
+            if not segment_counts.empty:
+                segment_fig = px.pie(segment_counts, values="count", names="segment", title="Customer Segment Distribution")
+                st.plotly_chart(segment_fig, use_container_width=True)
+            else:
+                st.info("No segment data available yet.")
+
+        with right_col:
+            st.subheader("Category Preferences")
+            if not category_counts.empty:
+                category_fig = px.bar(category_counts, x="category", y="count", color="count", title="Primary Category Preferences")
+                st.plotly_chart(category_fig, use_container_width=True)
+            elif not preferences_df.empty and "primary_category" in preferences_df.columns:
+                category_counts = preferences_df["primary_category"].value_counts().reset_index()
+                category_counts.columns = ["category", "count"]
+                category_fig = px.bar(category_counts, x="category", y="count", color="count", title="Primary Category Preferences")
+                st.plotly_chart(category_fig, use_container_width=True)
+            else:
+                st.info("No category preference data available yet.")
+
+        st.markdown("---")
+        st.subheader("RFM Scatter")
+        if not rfm_df.empty:
+            rfm_fig = px.scatter(
+                rfm_df,
+                x="last_purchase_days_ago",
+                y="total_spent_rupees",
+                size="total_purchases",
+                color="segment",
+                hover_name="customer_id",
+                labels={"last_purchase_days_ago": "Recency (days)", "total_spent_rupees": "Monetary (₹)"},
+            )
+            st.plotly_chart(rfm_fig, use_container_width=True)
+        else:
+            st.info("RFM data is not available yet.")
+
+        st.markdown("---")
+        st.subheader("KMeans Clustering")
+        if not kmeans_assignments.empty:
+            kmeans_fig = px.scatter(
+                kmeans_assignments,
+                x="last_purchase_days_ago",
+                y="total_spent_rupees",
+                color="cluster_label",
+                size="total_purchases",
+                hover_name="customer_id",
+                title="Customer KMeans Clusters",
+                labels={"last_purchase_days_ago": "Recency (days)", "total_spent_rupees": "Monetary (₹)", "cluster_label": "Cluster"},
+                color_discrete_sequence=px.colors.qualitative.Set2,
+                hover_data={
+                    "segment": True,
+                    "total_purchases": True,
+                    "average_order_value": True,
+                    "cluster": True,
+                },
+            )
+            kmeans_fig.update_traces(marker=dict(opacity=0.78, line=dict(width=0.5, color="white")))
+            kmeans_fig.update_layout(
+                height=520,
+                legend_title_text="KMeans Cluster",
+                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
+                margin=dict(l=10, r=10, t=70, b=10),
+                template="plotly_white",
+            )
+            st.plotly_chart(kmeans_fig, use_container_width=True)
+        else:
+            st.info("KMeans plot will appear once the RFM data is available.")
+
+        if not kmeans_stats.empty:
+            st.markdown("##### Cluster Summary")
+            st.dataframe(kmeans_stats, use_container_width=True, height=240)
+        else:
+            st.info("KMeans summary will appear after the RFM dataset is loaded.")
+
+        st.markdown("---")
+        st.subheader("Top Customers")
+        if not top_customers.empty:
+            top_view = top_customers[[col for col in ["customer_id", "segment", "total_purchases", "total_spent_rupees", "last_purchase_days_ago", "average_order_value"] if col in top_customers.columns]]
+            st.dataframe(top_view, use_container_width=True, height=280)
+        else:
+            st.info("Top customer ranking will show up once the RFM file is available.")
 
 # ==================== Footer ====================
 
