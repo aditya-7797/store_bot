@@ -113,14 +113,14 @@ def call_api(endpoint: str, method: str = "GET", data: dict = None):
         return None
 
 
+@st.cache_data(show_spinner=False)
 def load_forecasting_dataset() -> pd.DataFrame:
-    """Load live sales history for forecasting."""
-    df = load_sales_history().copy()
-    if df.empty:
+    """Load grocery sales CSV dataset for forecasting."""
+    csv_path = ROOT_DIR / "grocery_sales_dataset.csv"
+    if not csv_path.exists():
         return pd.DataFrame(columns=["date", "product_name", "quantity"])
-
-    df = df.rename(columns={"sale_date": "date"})
-    df["date"] = pd.to_datetime(df["date"], errors="coerce")
+    df = pd.read_csv(csv_path)
+    df["date"] = pd.to_datetime(df["date"], dayfirst=True, errors="coerce")
     df = df.dropna(subset=["date"])
     return df
 
@@ -586,9 +586,13 @@ elif page == "🔮 Forecasting":
             next_period = next_period[
                 ["product_name", "ds", "yhat", "yhat_lower", "yhat_upper"]
             ].reset_index(drop=True)
+            # Round predicted values to whole numbers
+            next_period["yhat"] = next_period["yhat"].round().astype(int)
+            next_period["yhat_lower"] = next_period["yhat_lower"].round().astype(int)
+            next_period["yhat_upper"] = next_period["yhat_upper"].round().astype(int)
             all_rows.append(next_period)
 
-            total_sales = float(next_period["yhat"].sum())
+            total_sales = int(next_period["yhat"].sum())
             summary_rows.append(
                 {
                     "product_name": product,
@@ -597,8 +601,7 @@ elif page == "🔮 Forecasting":
                 }
             )
 
-            st.metric("Total expected sales (selected period)", f"{total_sales:.2f}")
-            st.dataframe(next_period[["ds", "yhat", "yhat_lower", "yhat_upper"]], use_container_width=True)
+            st.metric("Total expected sales (selected period)", f"{total_sales}")
 
             line_fig = px.line(
                 next_period,
@@ -622,15 +625,17 @@ elif page == "🔮 Forecasting":
             )
             st.plotly_chart(line_fig, use_container_width=True)
 
-            st.markdown("**Trend and Seasonality**")
-            comp_fig = model.plot_components(forecast)
-            st.pyplot(comp_fig)
-            plt.close(comp_fig)
-
         st.markdown("---")
         st.subheader("📊 Total Expected Sales (Next Month)")
         summary_df = pd.DataFrame(summary_rows)
-        st.dataframe(summary_df, use_container_width=True)
+        # Display as styled metrics instead of a table
+        cols = st.columns(min(len(summary_df), 4))
+        for i, row in summary_df.iterrows():
+            with cols[i % len(cols)]:
+                st.metric(
+                    label=row["product_name"],
+                    value=int(row["total_expected_sales_next_month"]),
+                )
 
         if all_rows:
             combined_forecast = pd.concat(all_rows, ignore_index=True)
