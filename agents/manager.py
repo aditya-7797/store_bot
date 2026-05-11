@@ -22,6 +22,7 @@ Analyze the user's query and classify it into ONE of these categories:
 Respond with ONLY ONE WORD: either "librarian", "clerk", "analytics", or "forecast"
 
 Examples:
+
 - "how many pens do we have?" → librarian
 - "add 10 blue pens" → clerk
 - "sell 5 bottles" → clerk
@@ -36,6 +37,19 @@ Examples:
 - "how much sugar will sell next week?" → forecast
 - "forecast eggs for next 30 days" → forecast
 - "expected sales of bread" → forecast"""),
+
+- "how many pens do we have?" -> librarian
+- "add 10 blue pens" -> clerk
+- "sell 5 bottles" -> clerk
+- "what's in stock?" -> librarian
+- "check oil bottle availability" -> librarian
+- "update stock with 10 markers" -> clerk
+- "what can I sell with bread loaf" -> analytics
+- "which products are bought together with tea powder" -> analytics
+- "recommend bundle for milk packet" -> analytics
+- "show customer segments" -> analytics
+- "what are the RFM segments" -> analytics
+- "list top customers" -> analytics"""),
     ("user", "{query}")
 ])
 
@@ -43,6 +57,31 @@ routing_chain = routing_prompt | llm
 
 def manager_agent(state: dict):
     query = state["query"]
+    query_lower = query.lower()
+
+    customer_keywords = [
+        "customer",
+        "customers",
+        "segment",
+        "segmentation",
+        "rfm",
+        "top customers",
+        "top customer",
+        "churn",
+        "lifetime value",
+        "ltv",
+        "loyal",
+        "high value",
+        "low value",
+        "recency",
+        "frequency",
+        "monetary",
+        "cluster",
+    ]
+
+    if any(keyword in query_lower for keyword in customer_keywords):
+        state["route"] = "analytics"
+        return state
     
     try:
         # Use LLM for intelligent routing
@@ -57,7 +96,6 @@ def manager_agent(state: dict):
             state["route"] = "librarian"
     except Exception as e:
         # Fallback routing if LLM fails
-        query_lower = query.lower()
         if (
             "forecast" in query_lower
             or "predict" in query_lower

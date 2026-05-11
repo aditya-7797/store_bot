@@ -169,7 +169,11 @@ async def record_transaction(request: SalesTransactionRequest):
             if request.unit_price is not None:
                 unit_price = float(request.unit_price)
             else:
-                unit_price = float(price_lookup.get(product_id, 0.0))
+                # If we have a historical price for this product use it, otherwise leave as NULL
+                if product_id in price_lookup:
+                    unit_price = float(price_lookup.get(product_id))
+                else:
+                    unit_price = None
 
             transaction_id = request.transaction_id or f"TX-{datetime.utcnow().strftime('%Y%m%d%H%M%S%f')[:18]}"
             purchase_date = request.purchase_date or datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
@@ -332,4 +336,4 @@ async def get_customer_summary():
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000, reload=True)
+    uvicorn.run("backend.main:app", host="0.0.0.0", port=8000, reload=True)
