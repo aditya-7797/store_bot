@@ -36,8 +36,7 @@ Examples:
 - "predict demand for rice" → forecast
 - "how much sugar will sell next week?" → forecast
 - "forecast eggs for next 30 days" → forecast
-- "expected sales of bread" → forecast"""),
-
+- "expected sales of bread" → forecast
 - "how many pens do we have?" -> librarian
 - "add 10 blue pens" -> clerk
 - "sell 5 bottles" -> clerk
