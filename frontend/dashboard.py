@@ -528,7 +528,7 @@ elif page == "📈 Analytics":
 elif page == "🔮 Forecasting":
     st.title("🔮 Sales Forecasting")
     st.markdown("### Product-wise Prophet Forecasting")
-    st.caption("Install dependency if needed: `pip install prophet`")
+    # st.caption("Install dependency if needed: `pip install prophet`")
 
     try:
         from prophet import Prophet  # noqa: F401
