@@ -66,29 +66,53 @@ def load_preferences() -> pd.DataFrame:
 
 
 def build_product_price_map() -> dict[int, float]:
-    """Estimate unit prices for each product from the live sales table."""
+    """Estimate unit prices for each product from sales table with fallback pricing."""
+    FALLBACK_PRICES = {
+        "bread": 30, "milk": 45, "eggs": 60, "butter": 120, "cheese": 180,
+        "yogurt": 40, "rice": 50, "wheat flour": 35, "sugar": 40, "salt": 15,
+        "oil": 110, "spices": 80, "tea": 180, "coffee": 200, "biscuits": 25,
+        "chocolate": 30, "chips": 20, "juice": 35, "water": 20, "soda": 30,
+        "snacks": 40, "nuts": 200, "fruits": 60, "vegetables": 50,
+        "paneer": 250, "meat": 300, "fish": 250, "dal": 80, "flour": 35,
+    }
+    
     query = """
         SELECT product_id, AVG(price) AS avg_price
         FROM sales
-        WHERE product_id IS NOT NULL AND price IS NOT NULL
+        WHERE product_id IS NOT NULL AND price IS NOT NULL AND price > 0
         GROUP BY product_id
     """
     conn = get_connection()
     try:
         price_df = pd.read_sql_query(query, conn)
+        products_df = pd.read_sql_query("SELECT id, name FROM products", conn)
     finally:
         conn.close()
 
-    if price_df.empty:
-        return {}
-
-    price_df["product_id"] = pd.to_numeric(price_df["product_id"], errors="coerce")
-    price_df["avg_price"] = pd.to_numeric(price_df["avg_price"], errors="coerce")
-    price_df = price_df.dropna(subset=["product_id", "avg_price"])
-    return {
-        int(row.product_id): float(row.avg_price)
-        for row in price_df.itertuples(index=False)
-    }
+    price_map = {}
+    if not price_df.empty:
+        price_df["product_id"] = pd.to_numeric(price_df["product_id"], errors="coerce")
+        price_df["avg_price"] = pd.to_numeric(price_df["avg_price"], errors="coerce")
+        price_df = price_df.dropna(subset=["product_id", "avg_price"])
+        price_map = {
+            int(row.product_id): float(row.avg_price)
+            for row in price_df.itertuples(index=False)
+        }
+    
+    # Fallback: assign prices based on product names
+    if not products_df.empty:
+        for _, row in products_df.iterrows():
+            product_id = int(row["id"])
+            if product_id not in price_map:
+                product_name = str(row["name"]).lower().strip()
+                fallback_price = 50.0
+                for key, val in FALLBACK_PRICES.items():
+                    if key in product_name or product_name in key:
+                        fallback_price = float(val)
+                        break
+                price_map[product_id] = fallback_price
+    
+    return price_map
 
 
 def append_customer_transaction(transaction_row: dict) -> None:
@@ -241,18 +265,44 @@ def compute_rfm_from_transactions(transactions: pd.DataFrame) -> pd.DataFrame:
     else:
         reference_date = pd.Timestamp.today().normalize()
 
+    # Determine if we should use the monetary column or fall back to quantity-based estimation
+    use_monetary = False
     if monetary_col is not None:
-        working[monetary_col] = pd.to_numeric(working[monetary_col], errors="coerce").fillna(0.0)
-    elif quantity_col is not None:
-        working[quantity_col] = pd.to_numeric(working[quantity_col], errors="coerce").fillna(0.0)
-        price_lookup = build_product_price_map()
-        if price_lookup and "product_id" in working.columns:
-            working["_estimated_price"] = pd.to_numeric(working["product_id"], errors="coerce").map(price_lookup).fillna(1.0)
+        working[monetary_col] = pd.to_numeric(working[monetary_col], errors="coerce")
+        non_zero_frac = (working[monetary_col].fillna(0.0) > 0).sum() / max(1, len(working))
+        if non_zero_frac >= 0.1:
+            # monetary column has enough non-zero values; use it
+            use_monetary = True
+            working[monetary_col] = working[monetary_col].fillna(0.0)
+
+    # If monetary is not available or mostly empty, use quantity-based estimation
+    if not use_monetary:
+        if quantity_col is not None:
+            working[quantity_col] = pd.to_numeric(working[quantity_col], errors="coerce").fillna(0.0)
+            price_lookup = build_product_price_map()
+            # Determine a sensible fallback price: median of known prices or 50
+            if price_lookup:
+                try:
+                    median_price = float(pd.Series(list(price_lookup.values())).median())
+                except Exception:
+                    median_price = 50.0
+            else:
+                median_price = 50.0
+
+            if "product_id" in working.columns:
+                working["_estimated_price"] = pd.to_numeric(working["product_id"], errors="coerce").map(price_lookup).fillna(median_price)
+            else:
+                working["_estimated_price"] = median_price
+            working["_estimated_value"] = working[quantity_col] * working["_estimated_price"]
+            monetary_col = "_estimated_value"
         else:
-            working["_estimated_price"] = 1.0
-        working["_estimated_value"] = working[quantity_col] * working["_estimated_price"]
-        monetary_col = "_estimated_value"
+            working["_estimated_value"] = 1.0
+            monetary_col = "_estimated_value"
+    elif quantity_col is not None:
+        # Already set use_monetary=True and working[monetary_col] is ready
+        pass
     else:
+        # Fallback: use constant 1.0 for all transactions
         working["_estimated_value"] = 1.0
         monetary_col = "_estimated_value"
 
@@ -282,7 +332,39 @@ def compute_rfm_from_transactions(transactions: pd.DataFrame) -> pd.DataFrame:
         lambda row: float(row["total_spent_rupees"]) / row["total_purchases"] if row["total_purchases"] else 0.0,
         axis=1,
     )
-    aggregated["segment"] = "Unknown"
+
+    # Assign RFM scores (1-4) using quantiles and map to human-friendly segments
+    try:
+        # Recency: lower is better -> invert labels so lowest recency gets highest score
+        if "recency_days" in aggregated.columns and aggregated["recency_days"].nunique() > 1:
+            aggregated["recency_score"] = pd.qcut(aggregated["recency_days"], 4, labels=[4, 3, 2, 1]).astype(int)
+        else:
+            aggregated["recency_score"] = 4
+
+        if "frequency" in aggregated.columns and aggregated["frequency"].nunique() > 1:
+            aggregated["frequency_score"] = pd.qcut(aggregated["frequency"], 4, labels=[1, 2, 3, 4]).astype(int)
+        else:
+            aggregated["frequency_score"] = 1
+
+        if "monetary_value" in aggregated.columns and aggregated["monetary_value"].nunique() > 1:
+            aggregated["monetary_score"] = pd.qcut(aggregated["monetary_value"], 4, labels=[1, 2, 3, 4]).astype(int)
+        else:
+            aggregated["monetary_score"] = 1
+
+        aggregated["rfm_score"] = aggregated["recency_score"] + aggregated["frequency_score"] + aggregated["monetary_score"]
+
+        def _map_segment(score: int) -> str:
+            if score >= 10:
+                return "Champions"
+            if score >= 7:
+                return "Loyal"
+            if score >= 4:
+                return "At Risk"
+            return "Lost"
+
+        aggregated["segment"] = aggregated["rfm_score"].apply(lambda v: _map_segment(int(v)))
+    except Exception:
+        aggregated["segment"] = "Unknown"
     rounded = aggregated.sort_values(["total_spent_rupees", "total_purchases"], ascending=False).reset_index(drop=True)
     for column in ["total_spent_rupees", "average_order_value", "monetary_value", "recency_days", "last_purchase_days_ago"]:
         if column in rounded.columns:

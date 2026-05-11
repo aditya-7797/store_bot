@@ -208,21 +208,27 @@ if page == "📊 Dashboard":
     col_left, col_right = st.columns(2)
     
     with col_left:
-        st.subheader("📈 Sales Trend (Last 30 Days)")
+        st.subheader("📈 Sales Trend (Up to Apr 23)")
         trend_data = call_api("/api/analytics/sales-trend")
         if trend_data and trend_data.get("trend"):
             trend_df = pd.DataFrame(trend_data["trend"])
             trend_df["date"] = pd.to_datetime(trend_df["date"])
-            trend_df = trend_df.sort_values("date").tail(30)
-            trend_fig = px.line(
-                trend_df,
-                x="date",
-                y="total_revenue",
-                markers=True,
-                labels={"date": "Date", "total_revenue": "Revenue (₹)"},
-            )
-            trend_fig.update_layout(height=350)
-            st.plotly_chart(trend_fig, use_container_width=True)
+            trend_df = trend_df.sort_values("date")
+            # Limit the sales trend to April 23 of the current year
+            cutoff = pd.Timestamp(year=datetime.now().year, month=4, day=23)
+            trend_df = trend_df[trend_df["date"] <= cutoff]
+            if trend_df.empty:
+                st.info("No sales data up to Apr 23 is available.")
+            else:
+                trend_fig = px.line(
+                    trend_df,
+                    x="date",
+                    y="total_revenue",
+                    markers=True,
+                    labels={"date": "Date", "total_revenue": "Revenue (₹)"},
+                )
+                trend_fig.update_layout(height=350)
+                st.plotly_chart(trend_fig, use_container_width=True)
         else:
             st.info("Sales trend data is not available yet.")
     
@@ -528,7 +534,7 @@ elif page == "📈 Analytics":
 elif page == "🔮 Forecasting":
     st.title("🔮 Sales Forecasting")
     st.markdown("### Product-wise Prophet Forecasting")
-    st.caption("Install dependency if needed: `pip install prophet`")
+    # st.caption("Install dependency if needed: `pip install prophet`")
 
     try:
         from prophet import Prophet  # noqa: F401
