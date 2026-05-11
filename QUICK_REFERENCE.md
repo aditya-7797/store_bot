@@ -328,9 +328,6 @@ segment = determine_segment(
 ### Environment Variables (.env)
 
 ```bash
-# Required
-GROQ_API_KEY=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
-
 # Optional
 DATABASE_URL=postgresql://user:pass@localhost/smartretail
 LOG_LEVEL=INFO
