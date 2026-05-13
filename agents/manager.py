@@ -18,8 +18,9 @@ Analyze the user's query and classify it into ONE of these categories:
 - "clerk" - for adding items to stock, selling/removing items from stock
 - "analytics" - for product recommendations, bundle suggestions, association queries like what sells with what
 - "forecast" - for predicting future sales, demand forecasting, expected sales next month/week
+- "rag_copilot" - for operational procedures, SOP questions, reconciliation, onboarding, and training documents
 
-Respond with ONLY ONE WORD: either "librarian", "clerk", "analytics", or "forecast"
+Respond with ONLY ONE WORD: either "librarian", "clerk", "analytics", "forecast", or "rag_copilot"
 
 Examples:
 
@@ -57,6 +58,40 @@ routing_chain = routing_prompt | llm
 def manager_agent(state: dict):
     query = state["query"]
     query_lower = query.lower()
+
+    # Check for operational/SOP questions - route to rag_copilot
+    operations_keywords = [
+        "reconcil",  # reconciliation, reconcile
+        "negative stock",
+        "how to add stock",
+        "how can i add",
+        "how can i handle",
+        "sop",
+        "standard operating procedure",
+        "onboarding",
+        "process",
+        "procedure",
+        "guardrail",
+        "rfm",
+        "recency",
+        "frequency",
+        "monetary",
+        "what does rfm mean",
+        "who should we prioritize",
+        "prioritize for promotion",
+        "stock procedures",
+        "inventory procedures",
+        "daily reconciliation",
+        "weekly reconciliation",
+        "system access",
+        "getting access",
+        "dashboard tour",
+        "stock update",
+    ]
+
+    if any(keyword in query_lower for keyword in operations_keywords):
+        state["route"] = "rag_copilot"
+        return state
 
     price_scenario_keywords = [
         "what if",
@@ -103,7 +138,7 @@ def manager_agent(state: dict):
         route = result.content.strip().lower()
         
         # Validate the route
-        if route in ["librarian", "clerk", "analytics", "forecast"]:
+        if route in ["librarian", "clerk", "analytics", "forecast", "rag_copilot"]:
             state["route"] = route
         else:
             # Fallback to librarian if LLM returns something unexpected

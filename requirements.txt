@@ -1,6 +1,7 @@
 langchain
 langchain-openai
 langchain-groq
+langchain-community
 langgraph
 langsmith
 python-dotenv
@@ -10,4 +11,6 @@ sounddevice
 soundfile
 groq
 scikit-learn
+faiss-cpu
+sentence-transformers
 
