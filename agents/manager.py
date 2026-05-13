@@ -58,6 +58,21 @@ def manager_agent(state: dict):
     query = state["query"]
     query_lower = query.lower()
 
+    price_scenario_keywords = [
+        "what if",
+        "price",
+        "increase",
+        "decrease",
+        "raise",
+        "reduce",
+        "percent",
+        "%",
+    ]
+
+    if "price" in query_lower and any(keyword in query_lower for keyword in price_scenario_keywords):
+        state["route"] = "analytics"
+        return state
+
     customer_keywords = [
         "customer",
         "customers",

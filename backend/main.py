@@ -19,6 +19,7 @@ from backend.models.apriori_analysis import get_apriori_rules
 from graph.workflow import graph
 from tools.customer_analytics import append_customer_transaction, build_product_price_map, build_sales_trend, build_top_selling_products, customer_summary_payload
 from tools.inventory_tools import get_all_products, get_stock, update_stock
+from agents.daily_copilot import daily_snapshot, reorder_recommendations, stockout_risk, push_recommendations
 
 app = FastAPI(
     title=settings.APP_NAME,
@@ -104,6 +105,16 @@ async def query_agent(request: QueryRequest):
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Agent error: {str(e)}")
+
+
+# ==================== Daily Decision Copilot Endpoint ====================
+@app.get("/api/daily-copilot")
+async def get_daily_snapshot():
+    try:
+        snap = daily_snapshot()
+        return snap
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"DailyCopilot error: {str(e)}")
 
 # ==================== Inventory Endpoints ====================
 

@@ -8,7 +8,7 @@ by both the FastAPI backend and the Streamlit dashboard.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Iterable, Optional
+from typing import Any, Iterable, Optional
 
 import pandas as pd
 from sklearn.cluster import KMeans
@@ -540,4 +540,162 @@ def customer_summary_payload() -> dict:
         "top_customers": top_customers,
         "category_counts": category_counts,
         "preferences": preferences,
+    }
+
+
+def recommend_products_for_high_value_customers(top_n: int = 5) -> dict[str, Any]:
+    """Recommend products based on real purchases from high-value customers."""
+    transactions = load_transactions()
+    if transactions.empty:
+        return {
+            "status": "no_transactions",
+            "message": "No customer transactions found.",
+            "recommendations": pd.DataFrame(),
+        }
+
+    rfm = enrich_rfm_segments(load_rfm_segments())
+    if rfm.empty:
+        rfm = compute_rfm_from_transactions(transactions)
+
+    if rfm.empty or "customer_id" not in rfm.columns:
+        return {
+            "status": "no_rfm",
+            "message": "RFM data unavailable for identifying high-value customers.",
+            "recommendations": pd.DataFrame(),
+        }
+
+    rfm = rfm.copy()
+    rfm["customer_id"] = pd.to_numeric(rfm["customer_id"], errors="coerce")
+    rfm = rfm.dropna(subset=["customer_id"])
+
+    high_value = pd.DataFrame()
+    if "segment" in rfm.columns:
+        segment_text = rfm["segment"].astype(str).str.lower()
+        high_value = rfm[
+            segment_text.str.contains("high value", na=False)
+            | segment_text.str.contains("high-value", na=False)
+            | segment_text.str.contains("vip", na=False)
+            | segment_text.str.contains("champion", na=False)
+        ].copy()
+
+    # Fallback for datasets that don't label segments the same way.
+    if high_value.empty and "total_spent_rupees" in rfm.columns:
+        spend = pd.to_numeric(rfm["total_spent_rupees"], errors="coerce").fillna(0.0)
+        threshold = float(spend.quantile(0.80))
+        high_value = rfm[spend >= threshold].copy()
+
+    if high_value.empty:
+        return {
+            "status": "no_high_value_customers",
+            "message": "No high-value customers found in the current dataset.",
+            "recommendations": pd.DataFrame(),
+        }
+
+    customer_col = _pick_column(transactions, ["customer_id", "customerid", "client_id"])
+    product_col = _pick_column(transactions, ["product_id", "productid", "item_id"])
+    quantity_col = _pick_column(transactions, ["quantity", "qty", "units"])
+    tx_col = _pick_column(transactions, ["transaction_id", "invoice_id", "order_id"])
+
+    if customer_col is None or product_col is None:
+        return {
+            "status": "missing_columns",
+            "message": "transactions data requires customer_id and product_id columns.",
+            "recommendations": pd.DataFrame(),
+        }
+
+    tx = transactions.copy()
+    tx[customer_col] = pd.to_numeric(tx[customer_col], errors="coerce")
+    tx[product_col] = pd.to_numeric(tx[product_col], errors="coerce")
+    tx = tx.dropna(subset=[customer_col, product_col])
+    tx[customer_col] = tx[customer_col].astype(int)
+    tx[product_col] = tx[product_col].astype(int)
+
+    if quantity_col is not None:
+        tx[quantity_col] = pd.to_numeric(tx[quantity_col], errors="coerce").fillna(0.0)
+    else:
+        quantity_col = "_default_quantity"
+        tx[quantity_col] = 1.0
+
+    high_value_ids = set(high_value["customer_id"].astype(int).tolist())
+    hv_tx = tx[tx[customer_col].isin(high_value_ids)].copy()
+    if hv_tx.empty:
+        return {
+            "status": "no_high_value_transactions",
+            "message": "High-value customers exist, but no matching transactions were found.",
+            "recommendations": pd.DataFrame(),
+        }
+
+    group_cols = [product_col]
+    agg_map: dict[str, tuple[str, str]] = {
+        "distinct_customers": (customer_col, "nunique"),
+        "total_units": (quantity_col, "sum"),
+    }
+    if tx_col is not None:
+        agg_map["order_count"] = (tx_col, "nunique")
+    else:
+        agg_map["order_count"] = (customer_col, "size")
+
+    ranked = (
+        hv_tx.groupby(group_cols)
+        .agg(**agg_map)
+        .reset_index()
+        .rename(columns={product_col: "product_id"})
+    )
+
+    # Map product ids to names from live catalog when possible.
+    conn = get_connection()
+    try:
+        product_map_df = pd.read_sql_query("SELECT id, name FROM products", conn)
+    finally:
+        conn.close()
+
+    if not product_map_df.empty:
+        product_map_df["id"] = pd.to_numeric(product_map_df["id"], errors="coerce")
+        product_map_df = product_map_df.dropna(subset=["id"])
+        product_map_df["id"] = product_map_df["id"].astype(int)
+        ranked = ranked.merge(
+            product_map_df.rename(columns={"id": "product_id", "name": "product_name"}),
+            on="product_id",
+            how="left",
+        )
+
+        # Fallback for legacy datasets where transaction product ids start at 1..N,
+        # while current DB ids have shifted due to SQLite autoincrement.
+        missing_name_ratio = ranked["product_name"].isna().mean() if "product_name" in ranked.columns and len(ranked) else 1.0
+        if missing_name_ratio > 0.5:
+            ordered = product_map_df.sort_values("id").reset_index(drop=True)
+            ordered["legacy_product_id"] = ordered.index + 1
+            ranked = ranked.merge(
+                ordered[["legacy_product_id", "name"]].rename(
+                    columns={"legacy_product_id": "product_id", "name": "legacy_product_name"}
+                ),
+                on="product_id",
+                how="left",
+            )
+            ranked["product_name"] = ranked["product_name"].fillna(ranked["legacy_product_name"])
+            ranked = ranked.drop(columns=["legacy_product_name"], errors="ignore")
+    else:
+        ranked["product_name"] = pd.NA
+
+    ranked["product_name"] = ranked["product_name"].fillna(
+        ranked["product_id"].map(lambda value: f"Product ID {int(value)}")
+    )
+
+    total_hv_customers = max(1, len(high_value_ids))
+    ranked["customer_penetration_pct"] = (
+        ranked["distinct_customers"].astype(float) / float(total_hv_customers) * 100.0
+    ).round(2)
+
+    ranked = ranked.sort_values(
+        ["distinct_customers", "order_count", "total_units"],
+        ascending=False,
+    ).head(top_n)
+
+    for numeric_col in ["distinct_customers", "order_count", "total_units"]:
+        ranked[numeric_col] = pd.to_numeric(ranked[numeric_col], errors="coerce").fillna(0).astype(int)
+
+    return {
+        "status": "ok",
+        "high_value_customer_count": int(len(high_value_ids)),
+        "recommendations": ranked.reset_index(drop=True),
     }

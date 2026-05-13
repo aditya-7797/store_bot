@@ -1,6 +1,9 @@
 from backend.models.apriori_analysis import get_apriori_rules
+import math
+import re
 from tools.inventory_tools import get_all_products
-from tools.customer_analytics import customer_summary_payload
+from tools.customer_analytics import customer_summary_payload, recommend_products_for_high_value_customers
+from tools.db import get_connection
 
 SEGMENT_KEYWORDS = [
     "customer",
@@ -59,10 +62,157 @@ def _resolve_product_from_query(query: str) -> str | None:
     return best_name if best_score > 0 else None
 
 
+def _extract_price_change_fraction(query: str) -> float | None:
+    """Extract price change from query as fraction (e.g. +0.05, -0.10)."""
+    q = query.lower()
+    match = re.search(r"(-?\d+(?:\.\d+)?)\s*%", q)
+    if not match:
+        match = re.search(r"(-?\d+(?:\.\d+)?)\s*(?:percent|percentage)", q)
+    if not match:
+        return None
+
+    value = float(match.group(1)) / 100.0
+    if value == 0:
+        return 0.0
+
+    # Direction words can override unsigned values.
+    if value > 0:
+        if any(k in q for k in ["decrease", "reduce", "drop", "lower"]):
+            value = -abs(value)
+        elif any(k in q for k in ["increase", "raise", "up", "hike"]):
+            value = abs(value)
+    return value
+
+
+def _estimate_price_elasticity(product: str) -> tuple[float | None, str]:
+    """Estimate log-log elasticity from historical sales rows for a product."""
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            """
+            SELECT s.price, s.quantity
+            FROM sales s
+            JOIN products p ON p.id = s.product_id
+            WHERE lower(p.name) = lower(?)
+              AND s.price IS NOT NULL
+              AND s.price > 0
+              AND s.quantity IS NOT NULL
+              AND s.quantity > 0
+            """,
+            (product,),
+        ).fetchall()
+    finally:
+        conn.close()
+
+    if len(rows) < 15:
+        return None, "insufficient_rows"
+
+    x = [math.log(float(r[0])) for r in rows]
+    y = [math.log(float(r[1])) for r in rows]
+    n = len(x)
+    mean_x = sum(x) / n
+    mean_y = sum(y) / n
+    var_x = sum((v - mean_x) ** 2 for v in x)
+    if var_x <= 1e-12:
+        return None, "insufficient_price_variation"
+
+    cov_xy = sum((x[i] - mean_x) * (y[i] - mean_y) for i in range(n))
+    slope = cov_xy / var_x
+    return float(slope), "ok"
+
+
+def _simulate_price_change(product: str, price_change_fraction: float) -> dict:
+    """Simulate revenue impact for a product using real sales and estimated elasticity."""
+    conn = get_connection()
+    try:
+        recent_row = conn.execute(
+            """
+            SELECT
+                AVG(s.price) AS avg_price,
+                SUM(s.quantity) AS total_qty,
+                COUNT(*) AS row_count
+            FROM sales s
+            JOIN products p ON p.id = s.product_id
+            WHERE lower(p.name) = lower(?)
+              AND s.price IS NOT NULL
+              AND s.price > 0
+              AND datetime(s.created_at) >= datetime('now', '-30 days')
+            """,
+            (product,),
+        ).fetchone()
+
+        all_row = conn.execute(
+            """
+            SELECT
+                AVG(s.price) AS avg_price,
+                SUM(s.quantity) AS total_qty,
+                COUNT(*) AS row_count
+            FROM sales s
+            JOIN products p ON p.id = s.product_id
+            WHERE lower(p.name) = lower(?)
+              AND s.price IS NOT NULL
+              AND s.price > 0
+            """,
+            (product,),
+        ).fetchone()
+    finally:
+        conn.close()
+
+    source = "last_30_days"
+    avg_price = float(recent_row[0]) if recent_row and recent_row[0] is not None else 0.0
+    base_qty = float(recent_row[1]) if recent_row and recent_row[1] is not None else 0.0
+    if avg_price <= 0 or base_qty <= 0:
+        source = "all_time"
+        avg_price = float(all_row[0]) if all_row and all_row[0] is not None else 0.0
+        base_qty = float(all_row[1]) if all_row and all_row[1] is not None else 0.0
+
+    if avg_price <= 0 or base_qty <= 0:
+        return {"status": "no_sales_data"}
+
+    elasticity, elasticity_status = _estimate_price_elasticity(product)
+    used_default_elasticity = False
+    if elasticity is None:
+        # Data-safe fallback: hold quantity constant when elasticity is not identifiable.
+        elasticity = 0.0
+        used_default_elasticity = True
+
+    volume_change_fraction = float(elasticity) * float(price_change_fraction)
+    projected_qty = max(0.0, base_qty * (1.0 + volume_change_fraction))
+    projected_price = avg_price * (1.0 + price_change_fraction)
+
+    current_revenue = base_qty * avg_price
+    projected_revenue = projected_qty * projected_price
+
+    return {
+        "status": "ok",
+        "source": source,
+        "avg_price": avg_price,
+        "base_qty": base_qty,
+        "current_revenue": current_revenue,
+        "projected_price": projected_price,
+        "projected_qty": projected_qty,
+        "projected_revenue": projected_revenue,
+        "price_change_fraction": price_change_fraction,
+        "volume_change_fraction": volume_change_fraction,
+        "revenue_change_fraction": (projected_revenue / current_revenue - 1.0) if current_revenue > 0 else 0.0,
+        "elasticity": elasticity,
+        "elasticity_status": elasticity_status,
+        "used_default_elasticity": used_default_elasticity,
+    }
+
+
 def analytics_agent(state: dict) -> dict:
     query = state.get("query", "")
 
     q = query.lower()
+    wants_price_scenario = (
+        "price" in q
+        and any(k in q for k in ["what if", "increase", "decrease", "raise", "reduce", "%", "percent"])
+    )
+    wants_customer_recommendations = (
+        any(k in q for k in ["recommend", "recommendation", "suggest", "products for", "what should"])
+        and any(k in q for k in ["customer", "customers", "high value", "high-value", "vip"])
+    )
     wants_segment_summary = any(
         k in q
         for k in [
@@ -79,6 +229,80 @@ def analytics_agent(state: dict) -> dict:
         ]
     )
     wants_top_customers = any(k in q for k in TOP_CUSTOMER_KEYWORDS)
+
+    if wants_price_scenario:
+        product = _resolve_product_from_query(query)
+        if not product:
+            state["response"] = "I couldn't identify the product for price simulation. Try: 'What if I increase bread loaf price by 5%?'"
+            return state
+
+        pct = _extract_price_change_fraction(query)
+        if pct is None:
+            state["response"] = "Please include a price change percentage, for example: 'increase bread loaf price by 5%'."
+            return state
+
+        sim = _simulate_price_change(product, pct)
+        if sim.get("status") != "ok":
+            state["response"] = f"I couldn't find enough priced sales data for '{product}' to run this simulation."
+            return state
+
+        direction = "increase" if pct >= 0 else "decrease"
+        lines = [
+            f"Price-change simulation for {product}:",
+            f"- Scenario: {direction} price by {abs(pct) * 100:.1f}%",
+            f"- Baseline source: {sim.get('source').replace('_', ' ')}",
+            f"- Current avg unit price: ₹{sim.get('avg_price', 0.0):.2f}",
+            f"- Baseline units: {sim.get('base_qty', 0.0):.0f}",
+            f"- Baseline revenue: ₹{sim.get('current_revenue', 0.0):.2f}",
+            f"- Projected unit price: ₹{sim.get('projected_price', 0.0):.2f}",
+            f"- Projected units: {sim.get('projected_qty', 0.0):.0f}",
+            f"- Projected revenue: ₹{sim.get('projected_revenue', 0.0):.2f}",
+            f"- Revenue impact: {sim.get('revenue_change_fraction', 0.0) * 100:.2f}%",
+        ]
+
+        if sim.get("used_default_elasticity"):
+            lines.append("- Demand response model: not enough price variation, so quantity was held constant.")
+        else:
+            lines.append(f"- Demand response model: estimated price elasticity = {sim.get('elasticity', 0.0):.3f}")
+
+        state["response"] = "\n".join(lines)
+        return state
+
+    if wants_customer_recommendations:
+        try:
+            rec_payload = recommend_products_for_high_value_customers(top_n=5)
+        except Exception:
+            state["response"] = "I couldn't compute high-value customer recommendations right now. Please try again later."
+            return state
+
+        if rec_payload.get("status") != "ok":
+            state["response"] = rec_payload.get(
+                "message",
+                "I couldn't find enough data to recommend products for high-value customers.",
+            )
+            return state
+
+        rec_df = rec_payload.get("recommendations")
+        if rec_df is None or getattr(rec_df, "empty", True):
+            state["response"] = "No recommendation candidates were found for high-value customers in current data."
+            return state
+
+        hv_count = int(rec_payload.get("high_value_customer_count", 0))
+        lines = [
+            f"Recommended products for high-value customers:"
+        ]
+        for _, row in rec_df.iterrows():
+            name = str(row.get("product_name", "Unknown product"))
+            buyers = int(row.get("distinct_customers", 0))
+            orders = int(row.get("order_count", 0))
+            units = int(row.get("total_units", 0))
+            penetration = float(row.get("customer_penetration_pct", 0.0))
+            lines.append(
+                f"- {name}: bought by {buyers} high-value customers ({penetration:.1f}%), orders={orders}, units={units}"
+            )
+
+        state["response"] = "\n".join(lines)
+        return state
 
     # If this looks like a customer analytics question, use customer analytics
     if wants_segment_summary or wants_top_customers:

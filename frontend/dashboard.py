@@ -82,7 +82,7 @@ st.sidebar.markdown("---")
 
 page = st.sidebar.radio(
     "Navigation",
-    ["📊 Dashboard", "🤖 AI Assistant", "📦 Inventory", "📈 Analytics", "🔮 Forecasting", "👥 Customers"]
+    ["📊 Dashboard", "🤖 AI Assistant", "📦 Inventory", "📈 Analytics", "🔮 Forecasting", "👥 Customers", "🧭 Daily Copilot"]
 )
 
 st.sidebar.markdown("---")
@@ -208,7 +208,7 @@ if page == "📊 Dashboard":
     col_left, col_right = st.columns(2)
     
     with col_left:
-        st.subheader("📈 Sales Trend (Up to Apr 23)")
+        st.subheader("📈 Sales Trend")
         trend_data = call_api("/api/analytics/sales-trend")
         if trend_data and trend_data.get("trend"):
             trend_df = pd.DataFrame(trend_data["trend"])
@@ -299,13 +299,19 @@ elif page == "🤖 AI Assistant":
     st.markdown("### 💡 Example Queries")
     col1, col2 = st.columns(2)
     with col1:
-        st.code("How many blue pens in stock?", language="text")
-        st.code("Add 10 oil bottles", language="text")
-        st.code("List all products", language="text")
+        st.code("How many bread loafs are in stock?", language="text")
+        st.code("List all products in stock", language="text")
+        st.code("Add 15 bread loaves", language="text")
+        st.code("Show customer segmentation summary", language="text")
+        st.code("What can I sell with milk packet?", language="text")
     with col2:
-        st.code("Sell 5 biscuit boxes", language="text")
-        st.code("What's the current stock?", language="text")
-        st.code("Update inventory", language="text")
+        st.code("Sell 5 tea powders", language="text")
+        st.code("List top customers", language="text")
+        st.code("Which customers are high value?", language="text")
+        st.code("Recommend products for high-value customers", language="text")
+        st.code("What if I increase bread loaf price by 5%?", language="text")
+        st.code("What will be the sales of Milk next month?", language="text")
+        st.code("Predict demand for Rice in the next 30 days", language="text")
 
 # ==================== PAGE 3: Inventory ====================
 
@@ -757,6 +763,30 @@ elif page == "👥 Customers":
             st.dataframe(top_view, use_container_width=True, height=280)
         else:
             st.info("Top customer ranking will show up once the RFM file is available.")
+
+    # ==================== PAGE: Daily Copilot ====================
+elif page == "🧭 Daily Copilot":
+        st.title("🧭 Daily Decision Copilot")
+        st.markdown("Get quick, actionable recommendations for inventory, promotions, and customers.")
+        if st.button("Generate Snapshot"):
+            with st.spinner("Computing snapshot..."):
+                result = call_api("/api/daily-copilot", method="GET")
+            if result:
+                st.subheader("Reorder Recommendations")
+                for r in result.get("reorder_recommendations", [])[:10]:
+                    st.write(f"- {r['product']}: current {r['current_stock']}, suggested order {r['suggested_order']}")
+
+                st.subheader("Stockout Risk (next 7 days)")
+                for r in result.get("stockout_risk", []):
+                    days_left = r.get("days_left")
+                    days_left_str = f"{days_left:.1f} days" if days_left is not None else "N/A"
+                    st.write(f"- {r['product']}: {r['current_stock']} in stock, ~{r['avg_daily']:.2f}/day, {days_left_str} left")
+
+                st.subheader("Push Recommendations")
+                for r in result.get("push_recommendations", [])[:10]:
+                    st.write(f"- {r['product']}: margin est ₹{r['margin_est']:.2f}, sold {r['qty_90']}")
+            else:
+                st.error("Failed to compute snapshot. Ensure backend is running.")
 
 # ==================== Footer ====================
 
